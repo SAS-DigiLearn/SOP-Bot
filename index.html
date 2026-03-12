@@ -5,59 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>McHelpie</title>
 <style>
-body {
-  font-family: Arial, sans-serif;
-  background-color: #f8f9fa;
-  padding: 10px;
-}
-#chatbox {
-  background: white;
-  max-width: 800px;
-  margin: auto;
-  padding: 15px;
-  border-radius: 10px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-}
-.message {
-  margin: 10px 0;
-  padding: 10px;
-  border: 1px solid #dee2e6;
-  border-radius: 8px;
-}
-.bot {
-  background-color: #FCE8F2;
-  color: #000;
-  text-align: left;
-  margin-right: 10%;
-}
-.user {
-  background-color: #e9ecef;
-  color: #212529;
-  text-align: right;
-  margin-left: 10%;
-}
-button {
-  padding: 8px 15px;
-  margin: 5px;
-  background-color: #b91e71;
-  color: white;
-  border: none;
-  border-radius: 5px;
-  cursor: pointer;
-}
-input[type="text"] {
-  padding: 10px;
-  width: 70%;
-  border-radius: 5px;
-  border: 1px solid #ccc;
-}
-.highlight {
-  font-weight: bold;
-  background-color: #fff3cd;
-}
+body { font-family: Arial, sans-serif; background-color: #f8f9fa; padding: 10px; }
+#chatbox { background: white; max-width: 800px; margin: auto; padding: 15px; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+.message { margin: 10px 0; padding: 10px; border: 1px solid #dee2e6; border-radius: 8px; }
+.bot { background-color: #FCE8F2; color: #000; text-align: left; margin-right: 10%; }
+.user { background-color: #e9ecef; color: #212529; text-align: right; margin-left: 10%; }
+button { padding: 8px 15px; margin: 5px; background-color: #b91e71; color: white; border: none; border-radius: 5px; cursor: pointer; }
+input[type="text"] { padding: 10px; width: 70%; border-radius: 5px; border: 1px solid #ccc; }
+.highlight { font-weight: bold; background-color: #fff3cd; }
 </style>
 </head>
 <body>
+
 <div id="chatbox">
   <div class="message bot">Hi! I'm <strong>McHelpie</strong>. What can I help you with today?</div>
   <div id="messages"></div>
@@ -66,17 +25,28 @@ input[type="text"] {
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
+<script type="module">
 
-<script>
+import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.min.js';
+
 const messagesDiv = document.getElementById('messages');
 let knowledge = [];
+let embedder;
 
 /* LOAD KNOWLEDGE */
 async function loadKnowledge() {
   const res = await fetch('./data/knowledge.json');
   knowledge = await res.json();
 }
-loadKnowledge();
+await loadKnowledge();
+
+/* LOAD EMBEDDING MODEL */
+async function initEmbedder() {
+  appendMessage("Loading embedding model…", "bot");
+  embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+  appendMessage("Model loaded! You can ask questions now.", "bot");
+}
+await initEmbedder();
 
 /* CHAT UI */
 function appendMessage(text, sender) {
@@ -90,46 +60,32 @@ function appendMessage(text, sender) {
 /* COSINE SIMILARITY */
 function cosineSim(a, b) {
   let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
+  for (let i=0;i<a.length;i++){
+    dot += a[i]*b[i];
     normA += a[i]*a[i];
     normB += b[i]*b[i];
   }
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-8);
 }
 
-/* SIMPLE KEYWORD EMBEDDING (offline fallback) */
-function embed(text) {
-  const vec = new Array(128).fill(0);
-  const words = text.toLowerCase().split(/\W+/);
-  words.forEach(word => {
-    let hash = 0;
-    for (let i=0;i<word.length;i++){
-      hash=(hash<<5)-hash+word.charCodeAt(i);
-      hash|=0;
-    }
-    vec[Math.abs(hash)%vec.length]+=1;
-  });
-  return vec;
-}
-
-/* HIGHLIGHT MATCHED TERMS */
+/* HIGHLIGHT TERMS */
 function highlight(text, query) {
   const words = query.split(/\s+/);
   words.forEach(w=>{
-    const regex=new RegExp(`(${w})`,'gi');
-    text=text.replace(regex,'<span class="highlight">$1</span>');
+    const regex = new RegExp(`(${w})`, 'gi');
+    text = text.replace(regex,'<span class="highlight">$1</span>');
   });
   return text;
 }
 
-/* HYBRID SEMANTIC SEARCH */
+/* SEMANTIC SEARCH */
 function semanticSearch(queryVector, queryText, topN=3){
   const scored = knowledge.map(chunk=>{
     const semanticScore = cosineSim(queryVector, chunk.embedding);
+    // Optional: small keyword boost
     let keywordScore = 0;
     queryText.toLowerCase().split(/\s+/).forEach(k=>{
-      if(chunk.text.toLowerCase().includes(k)) keywordScore+=0.5;
+      if(chunk.text.toLowerCase().includes(k)) keywordScore+=0.1;
     });
     return {...chunk, score: semanticScore + keywordScore};
   });
@@ -137,8 +93,14 @@ function semanticSearch(queryVector, queryText, topN=3){
   return scored.slice(0,topN);
 }
 
-/* HANDLE QUESTION */
-async function handleUserQuestion() {
+/* EMBED QUERY USING TRANSFORMER */
+async function embedQuery(text){
+  const result = await embedder(text, { pooling: "mean", normalize: true });
+  return Array.from(result.data);
+}
+
+/* HANDLE USER QUESTION */
+async function handleUserQuestion(){
   const input = document.getElementById('userInput');
   const query = input.value.trim();
   if(!query) return;
@@ -146,7 +108,8 @@ async function handleUserQuestion() {
   appendMessage(query,'user');
   input.value='';
 
-  const queryVector = embed(query); // fallback offline embedding
+  // Compute query embedding in-browser
+  const queryVector = await embedQuery(query);
 
   const results = semanticSearch(queryVector, query, 3);
 
@@ -156,11 +119,13 @@ async function handleUserQuestion() {
       const bestSentence = sentences.find(s =>
         query.toLowerCase().split(/\s+/).some(k => s.toLowerCase().includes(k))
       ) || sentences[0];
+
       const highlighted = highlight(bestSentence, query);
+
       appendMessage(`<div>
         <p><b>Result ${idx+1}:</b> ${highlighted}</p>
         <small><b>${res.source}</b> – ${res.section}</small>
-        ${idx < results.length-1 ? '<hr>' : ''}
+        ${idx<results.length-1?'<hr>':''}
       </div>`,'bot');
     });
   } else {
@@ -175,6 +140,7 @@ document.getElementById('userInput').addEventListener("keypress", function(event
     handleUserQuestion();
   }
 });
+
 </script>
 </body>
 </html>

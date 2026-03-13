@@ -1,11 +1,18 @@
-name: Build Knowledge Base
+name: Build Knowledge Base & Jekyll Site
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "docs/**"
       - "tools/build-knowledge.js"
       - "package.json"
+      - "_config.yml"
+
+concurrency:
+  group: build-knowledge-jekyll-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -15,23 +22,60 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      # 1️⃣ Checkout repository
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
+      # 2️⃣ Setup Node.js
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
+      # 3️⃣ Cache npm dependencies
+      - name: Cache npm
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      # 4️⃣ Install Node dependencies
       - name: Install dependencies
         run: npm install
 
-      - name: Build knowledge base
+      # 5️⃣ Build knowledge.json
+      - name: Build Knowledge Base
         run: npm run build
 
-      - name: Commit knowledge.json
+      # 6️⃣ Commit knowledge.json if it changed
+      - name: Commit updated knowledge.json
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           git add data/knowledge.json
-          git commit -m "Update knowledge base" || echo "No changes"
-          git push
+          git diff --cached --quiet || git commit -m "Update knowledge base"
+          git push || echo "No changes to push"
+
+      # 7️⃣ Retry Docker pull for Jekyll builder
+      - name: Pull Jekyll Docker image
+        run: |
+          for i in 1 2 3; do
+            docker pull ghcr.io/actions/jekyll-build-pages:v1.0.13 && break
+            echo "Docker pull failed, retrying in 10s... ($i)"
+            sleep 10
+          done
+
+      # 8️⃣ Build the Jekyll site
+      - name: Build Jekyll site
+        uses: ghcr.io/actions/jekyll-build-pages:v1.0.13
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          source_dir: './'
+          destination_dir: './_site'
+
+      # 9️⃣ Optional: deploy or upload
+      - name: Deploy / Upload
+        run: |
+          echo "Add your deploy steps here (e.g., GitHub Pages, S3, Netlify, etc.)"
